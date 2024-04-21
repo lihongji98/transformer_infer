@@ -1,3 +1,4 @@
+import re
 from collections import defaultdict
 from itertools import islice
 import subprocess
@@ -6,17 +7,7 @@ from typing import List
 import onnxruntime as rt
 import numpy as np
 
-
-def softmax(x, dim=1):
-    x_max = np.max(x, axis=dim, keepdims=True)
-    x_shifted = x - x_max
-
-    x_exp = np.exp(x_shifted)
-    x_sum = np.sum(x_exp, axis=dim, keepdims=True)
-
-    softmax_values = x_exp / x_sum
-
-    return softmax_values
+from utils import beam_search, glue_tokens_sentence
 
 
 class ONNXModelExecutor:
@@ -26,6 +17,7 @@ class ONNXModelExecutor:
         self.trg_dict = self.load_voc_dict(trg, voc_size)
         self.reverse_trg_dict = {v: k for k, v in self.trg_dict.items()}
         self.session = None
+        self.line_symbols: List[str] = []
 
     @staticmethod
     def load_voc_dict(lang, voc_size):
@@ -45,21 +37,24 @@ class ONNXModelExecutor:
         except FileNotFoundError:
             raise RuntimeError("File is not found...")
 
-    def preprocessing(self, lines_to_translate: str) -> List[str]:
-        command1 = ["perl", "/Users/lihongji/mosesdecoder/scripts/tokenizer/normalize-punctuation.perl", "-l", "en"]
+    def preprocessing(self, lines_to_translate: str) -> str:
+        command1 = ["perl", "/Users/lihongji/mosesdecoder/scripts/tokenizer/normalize-punctuation.perl", "-l", f"{self.src}"]
         command2 = ["perl", "/Users/lihongji/mosesdecoder/scripts/tokenizer/tokenizer.perl", "-l", f"{self.src}"]
-        command3 = ["perl", "/Users/lihongji/mosesdecoder/scripts/recaser/truecase.perl", "--model", f"./voc/truecase-model.{self.src}"]
-        command4 = ["python", "./voc/apply_bpe.py", "-c", "./voc/bpecode.en"]
+        command3 = ["perl", "/Users/lihongji/mosesdecoder/scripts/recaser/truecase.perl", "--model",
+                    f"./voc/truecase-model.{self.src}"]
+        command4 = ["python", "./voc/apply_bpe.py", "-c", f"./voc/bpecode.{self.src}"]
+
         lines_to_translate = self.run_script(command1, lines_to_translate)
         lines_to_translate = self.run_script(command2, lines_to_translate)
         lines_to_translate = self.run_script(command3, lines_to_translate)
         lines_to_translate = self.run_script(command4, lines_to_translate)
 
-        return lines_to_translate.split()
+        return lines_to_translate
 
     @staticmethod
     def run_script(cmd, lines_to_translate):
-        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True)
         lines_to_translate, errors = process.communicate(input=lines_to_translate)
 
         return lines_to_translate
@@ -71,43 +66,51 @@ class ONNXModelExecutor:
         return token_ids
 
     def generate_encoder_decoder_input(self, lines_to_translate: str):
-        preprocessed_lines = self.preprocessing(lines_to_translate)
-        token_ids = self.convert_to_token_id(preprocessed_lines)
-        encoder_input = np.array(token_ids + [0 for _ in range(128 - len(token_ids))]).astype(np.int64).reshape(1, -1)
-        decoder_input = np.array([1]).astype(np.int64).reshape(1, -1)
+        lines_to_translate = self.preprocessing(lines_to_translate)
+        lines_to_translate = re.findall(r'[^.!?]+[.!?]?', lines_to_translate)
+        lines_to_translate = [s.strip() for s in lines_to_translate if s.strip()]
 
-        return encoder_input, decoder_input
+        for s in lines_to_translate:
+            self.line_symbols.append(s[-1])
 
-    def postprocessing(self):
-        pass
+        tokens_ids = [self.convert_to_token_id(line_to_translate.split()) for line_to_translate in lines_to_translate]
+
+        encoder_inputs, decoder_inputs = [], []
+        for i in range(len(tokens_ids)):
+            encoder_input = np.array(tokens_ids[i] + [0 for _ in range(128 - len(tokens_ids[i]))]).astype(np.int64).reshape(1, -1)
+            decoder_input = np.array([1]).astype(np.int64).reshape(1, -1)
+            encoder_inputs.append(encoder_input)
+            decoder_inputs.append(decoder_input)
+
+        return encoder_inputs, decoder_inputs
+
+    def postprocessing(self, lines: str) -> str:
+        command1 = ["perl", "/Users/lihongji/mosesdecoder/scripts/recaser/detruecase.perl"]
+        command2 = ["perl", "/Users/lihongji/mosesdecoder/scripts/tokenizer/detokenizer.perl", "-l", f"{self.trg}"]
+        lines = self.run_script(command1, lines)
+        lines = self.run_script(command2, lines)
+
+        return lines
 
     def infer(self, lines_to_translate: str):
-        encoder_input, decoder_input = self.generate_encoder_decoder_input(lines_to_translate)
+        encoder_inputs, decoder_inputs = self.generate_encoder_decoder_input(lines_to_translate)
 
-        encoder_input_name = self.session.get_inputs()[0].name
-        decoder_input_name = self.session.get_inputs()[1].name
-        output_name = self.session.get_outputs()[0].name
+        outputs_buffer = ""
+        for index, (encoder_input, decoder_input) in enumerate(zip(encoder_inputs, decoder_inputs)):
+            output = beam_search(self.session, encoder_input, decoder_input, beam_width=1)
+            output = [self.reverse_trg_dict.get(output[i], "<unk>") for i in range(len(output))][1:-1]
+            output = glue_tokens_sentence(output)
 
-        for _ in range(128):
-            output = self.session.run([output_name],
-                                 {encoder_input_name: encoder_input,
-                                  decoder_input_name: decoder_input})
-
-            top_token_id = softmax(output[0], dim=-1)[:, -1, :].flatten()
-            top_token_id = np.argsort(top_token_id)[-1:]
-            decoder_input = np.append(decoder_input, np.int64(top_token_id)).reshape(1, -1)
-
-            if decoder_input[0][-1] == 2:
-                break
-
-        output = decoder_input[0]
-        print(output)
-        output = [self.reverse_trg_dict.get(output[i], "<unk>") for i in range(len(output))][1:-1]
+            if not re.search(r'[.!?]$', output) and re.search(r'\w+$', output):
+                output += " " + self.line_symbols[index]
+            outputs_buffer += output + " "
+        output = self.postprocessing(outputs_buffer)
 
         print(output)
 
 
 if __name__ == "__main__":
+    sentence = "Vi er to personer så vi ønsker et dobbeltrom. Hvis det er mulig så vil vi gjerne reservere et rom med to enkeltsenger”."
     inferer = ONNXModelExecutor(src="no", trg="en")
     inferer.load_onnx_model("/Users/lihongji/PycharmProjects/gnn/No-En-Transformer.onnx")
-    inferer.infer("god morgen, hvordan har du det i dag?")
+    inferer.infer(sentence)
