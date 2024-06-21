@@ -7,10 +7,11 @@ from typing import List
 import onnxruntime as rt
 import numpy as np
 
-from utils import beam_search, glue_tokens_sentence
+from translator.utils import beam_search, glue_tokens_sentence
 
 
-mosedecoder_path = "./packages/mosesdecoder"
+mosedecoder_path = "./translator/packages/mosesdecoder"
+vocab_process_path = "./translator/voc"
 
 
 class ONNXModelExecutor:
@@ -27,7 +28,7 @@ class ONNXModelExecutor:
         voc_table = defaultdict(lambda: len(voc_table))
         voc_table.default_factory = voc_table.__len__
 
-        with open(f"./voc/voc_{lang}.txt", "r", encoding="utf-8") as voc_source:
+        with open(f"{vocab_process_path}" + f"/voc_{lang}.txt", "r", encoding="utf-8") as voc_source:
             for line in islice(voc_source, voc_size):
                 token, index_str = line.strip().split()
                 voc_table[token] = int(index_str)
@@ -44,14 +45,14 @@ class ONNXModelExecutor:
         command1 = ["perl", f"{mosedecoder_path}" + "/scripts/tokenizer/normalize-punctuation.perl", "-l", f"{self.src}"]
         command2 = ["perl", f"{mosedecoder_path}" + "/scripts/tokenizer/tokenizer.perl", "-l", f"{self.src}"]
         command3 = ["perl", f"{mosedecoder_path}" + "/scripts/recaser/truecase.perl", "--model",
-                    f"./voc/truecase-model.{self.src}"]
-        command4 = ["python", "./voc/apply_bpe.py", "-c", f"./voc/bpecode.{self.src}"]
+                    f"{vocab_process_path}" + f"/truecase-model.{self.src}"]
+        command4 = ["python", f"{vocab_process_path}" + "/apply_bpe.py", "-c", f"{vocab_process_path}" + f"/bpecode.{self.src}"]
 
         lines_to_translate = self.run_script(command1, lines_to_translate)
         lines_to_translate = self.run_script(command2, lines_to_translate)
         lines_to_translate = self.run_script(command3, lines_to_translate)
         lines_to_translate = self.run_script(command4, lines_to_translate)
-
+        
         return lines_to_translate
 
     @staticmethod

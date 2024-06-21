@@ -2,7 +2,7 @@ from model import ONNXModelExecutor
 
 
 if __name__ == "__main__":
-    sentence = "Ok, da har jeg reservert et dobbeltrom med to enkeltsenger med utsikt mot hagen fra fredag til søndag neste helg under navnet Hanne Nilsen. Høres dette greit ut?"
+    sentence = "Nordmenn ... Litt en jevn innesluttet type. Men veldig hyggelig hvis du møter dem på tur i fjellet eller i skogen. Da sier vi alltid hei til hverandre. Men ikke hvis du møter hverandre på gata."
     inferer = ONNXModelExecutor(src="no", trg="en")
     inferer.load_onnx_model("No-En-Transformer.onnx")
     output = inferer.infer(sentence)
