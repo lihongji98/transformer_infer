@@ -10,6 +10,9 @@ import numpy as np
 from utils import beam_search, glue_tokens_sentence
 
 
+mosedecoder_path = "./packages/mosesdecoder"
+
+
 class ONNXModelExecutor:
     def __init__(self, src: str, trg: str, voc_size=16000):
         self.src, self.trg = src, trg
@@ -38,9 +41,9 @@ class ONNXModelExecutor:
             raise RuntimeError("File is not found...")
 
     def preprocessing(self, lines_to_translate: str) -> str:
-        command1 = ["perl", "/Users/lihongji/mosesdecoder/scripts/tokenizer/normalize-punctuation.perl", "-l", f"{self.src}"]
-        command2 = ["perl", "/Users/lihongji/mosesdecoder/scripts/tokenizer/tokenizer.perl", "-l", f"{self.src}"]
-        command3 = ["perl", "/Users/lihongji/mosesdecoder/scripts/recaser/truecase.perl", "--model",
+        command1 = ["perl", f"{mosedecoder_path}" + "/scripts/tokenizer/normalize-punctuation.perl", "-l", f"{self.src}"]
+        command2 = ["perl", f"{mosedecoder_path}" + "/scripts/tokenizer/tokenizer.perl", "-l", f"{self.src}"]
+        command3 = ["perl", f"{mosedecoder_path}" + "/scripts/recaser/truecase.perl", "--model",
                     f"./voc/truecase-model.{self.src}"]
         command4 = ["python", "./voc/apply_bpe.py", "-c", f"./voc/bpecode.{self.src}"]
 
@@ -85,8 +88,8 @@ class ONNXModelExecutor:
         return encoder_inputs, decoder_inputs
 
     def postprocessing(self, lines: str) -> str:
-        command1 = ["perl", "/Users/lihongji/mosesdecoder/scripts/recaser/detruecase.perl"]
-        command2 = ["perl", "/Users/lihongji/mosesdecoder/scripts/tokenizer/detokenizer.perl", "-l", f"{self.trg}"]
+        command1 = ["perl", f"{mosedecoder_path}" + "/scripts/recaser/detruecase.perl"]
+        command2 = ["perl", f"{mosedecoder_path}" + "/scripts/tokenizer/detokenizer.perl", "-l", f"{self.trg}"]
         lines = self.run_script(command1, lines)
         lines = self.run_script(command2, lines)
 
@@ -106,11 +109,4 @@ class ONNXModelExecutor:
             outputs_buffer += output + " "
         output = self.postprocessing(outputs_buffer)
 
-        print(output)
-
-
-if __name__ == "__main__":
-    sentence = "Vi er to personer så vi ønsker et dobbeltrom. Hvis det er mulig så vil vi gjerne reservere et rom med to enkeltsenger”."
-    inferer = ONNXModelExecutor(src="no", trg="en")
-    inferer.load_onnx_model("/Users/lihongji/PycharmProjects/gnn/No-En-Transformer.onnx")
-    inferer.infer(sentence)
+        return output
